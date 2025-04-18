@@ -1,0 +1,440 @@
+function doGet(e) {
+  var fingerprintSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Fingerprints");
+  var id = e.parameter.id;
+  
+  // Response format with reordered fields
+  var response = {
+    "rollNo": "",
+    "username": "Unknown",
+    "email": "",
+    "phoneNo": "",
+    "roomNo": "",
+    "hostel": "",
+    "totalFees": 0
+  };
+
+  var data = fingerprintSheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][1] == id) { // Column B (fingerprintID)
+      response.rollNo = data[i][3] || "";       // Column D
+      response.username = data[i][2] || "Unknown"; // Column C
+      response.email = data[i][6] || "";        // Column G
+      response.phoneNo = data[i][4] || "";      // Column E
+      response.roomNo = data[i][7] || "";       // Column H
+      response.hostel = data[i][5] || "";       // Column F
+      response.totalFees = data[i][8] || 0;     // Column I
+      break;
+    }
+  }
+  
+  return ContentService.createTextOutput(JSON.stringify(response))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var fingerprintSheet = spreadsheet.getSheetByName("Fingerprints");
+  var paymentsSheet = spreadsheet.getSheetByName("Payments");
+  var otpSheet = spreadsheet.getSheetByName("OTPVerification") || spreadsheet.insertSheet("OTPVerification");
+
+  if (otpSheet.getLastRow() === 0) {
+    otpSheet.appendRow(["Timestamp", "Email", "OTP", "Verified", "FingerprintID"]);
+  }
+  
+  // Create Payments sheet if it doesn't exist
+  if (!paymentsSheet) {
+    paymentsSheet = spreadsheet.insertSheet("Payments");
+    paymentsSheet.appendRow([
+      "Timestamp", 
+      "Fingerprint ID", 
+      "Roll No",
+      "Username", 
+      "Email",
+      "Phone No",
+      "Hostel",
+      "Room No",
+      "Transaction Type", 
+      "Amount", 
+      "Current Total Fees", 
+      "Status"
+    ]);
+    
+    // Format headers
+    var headerRange = paymentsSheet.getRange(1, 1, 1, paymentsSheet.getLastColumn());
+    headerRange.setFontWeight("bold");
+    headerRange.setBackground("#dddddd");
+  }
+  
+  // Format Fingerprints sheet headers if empty (with new order)
+  if (fingerprintSheet.getLastRow() === 0) {
+    fingerprintSheet.appendRow([
+      "Timestamp",
+      "Fingerprint ID",
+      "Roll No",
+      "Username",
+      "Email",
+      "Phone No",
+      "Room No",
+      "Hostel",
+      "Total Fees",
+      "Status"
+    ]);
+
+    var otpData = otpSheet.getDataRange().getValues();
+    for (var i = otpData.length - 1; i >= 1; i--) { // Start from the latest record
+      if (otpData[i][4] == fingerprintID) { // Column E = FingerprintID
+        otpSheet.getRange(i + 1, 4).setValue("TRUE"); // Column D = Verified
+        break; // Stop after updating the most recent OTP
+      }
+    }
+    
+    var headerRange = fingerprintSheet.getRange(1, 1, 1, fingerprintSheet.getLastColumn());
+    headerRange.setFontWeight("bold");
+    headerRange.setBackground("#dddddd");
+  }
+  
+  var data;
+  try {
+    data = JSON.parse(e.postData.contents);
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      "error": "Invalid JSON"
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  if (data.action === "sendOTP") {
+    var email = data.email;
+    var otp = data.otp;
+    var fingerprintID = data.fingerprintID;
+    
+    // Store OTP (optional)
+    otpSheet.appendRow([
+      new Date(),
+      email,
+      otp,
+      "FALSE",
+      fingerprintID
+    ]);
+    
+    // Send email
+    var subject = "Your OTP for Registration";
+    var body = `Your OTP for fingerprint registration is: ${otp}\n\nThis OTP is valid for 5 minutes.`;
+    
+    MailApp.sendEmail({
+      to: email,
+      subject: subject,
+      body: body
+    });
+    
+    return ContentService.createTextOutput("Email sent").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  
+  // Handle OTP verification
+  if (data.action === "verifyOTP") {
+    return handleOTPVerification(data, otpSheet);
+  }
+
+  var fingerprintID = data.fingerprintID;
+  var username = data.username || "Unknown";
+  var status = data.status;
+  var isRegistration = status.includes("Stored");
+
+  // Check for existing fingerprint in Fingerprints sheet
+  var existingRow = -1;
+  var sheetData = fingerprintSheet.getDataRange().getValues();
+  for (var i = 1; i < sheetData.length; i++) {
+    if (sheetData[i][1] == fingerprintID) {
+      existingRow = i + 1;
+      break;
+    }
+  }
+
+  if (isRegistration) {
+    if (existingRow !== -1) {
+      return ContentService.createTextOutput(JSON.stringify({
+        "error": "Fingerprint already exists"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    // Map hostel number to name
+    var hostelName = "";
+    switch(parseInt(data.hostel || "0")) {
+      case 1: hostelName = "Arch A"; break;
+      case 2: hostelName = "Arch B"; break;
+      case 3: hostelName = "Arch C"; break;
+      case 4: hostelName = "Arch D"; break;
+      case 5: hostelName = "Other"; break;
+      default: hostelName = "Unknown"; break;
+    }
+    
+    // Add to Fingerprints sheet with reordered fields
+    fingerprintSheet.appendRow([
+      new Date(),
+      fingerprintID,
+      data.rollNo || "",
+      username,
+      data.email || "",
+      data.phoneNo || "",
+      data.roomNo || "",
+      hostelName,
+      0,             // Initial balance
+      status || "Registered"
+    ]);
+    
+    // Add to Payments sheet as registration
+    paymentsSheet.appendRow([
+      new Date(),
+      fingerprintID,
+      data.rollNo || "",
+      username,
+      data.email || "",
+      data.phoneNo || "",
+      hostelName,
+      data.roomNo || "",
+      "Registration",
+      0,
+      0,
+      status || "Registered successfully"
+    ]);
+    
+    // Send registration email notification
+    sendRegistrationEmail(data, hostelName);
+    
+    return ContentService.createTextOutput(JSON.stringify({
+      "success": true,
+      "message": "Registered successfully"
+    })).setMimeType(ContentService.MimeType.JSON);
+  } else {
+    // Payment processing
+    if (existingRow === -1) {
+      return ContentService.createTextOutput(JSON.stringify({
+        "error": "User not registered"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    var amount = 0;
+    var match = status.match(/\d+/);
+    if (match) amount = parseFloat(match[0]);
+    
+    var currentFees = fingerprintSheet.getRange(existingRow, 9).getValue() || 0;
+    var newTotal = currentFees + amount;
+    
+    // Get user details for payment record
+    var userData = fingerprintSheet.getRange(existingRow, 1, 1, fingerprintSheet.getLastColumn()).getValues()[0];
+    
+    // Update Fingerprints sheet
+    fingerprintSheet.getRange(existingRow, 10).setValue(status);
+    fingerprintSheet.getRange(existingRow, 9).setValue(newTotal);
+    
+    // Add to Payments sheet
+    paymentsSheet.appendRow([
+      new Date(),
+      fingerprintID,
+      userData[2], // Roll No
+      userData[3], // Username
+      userData[4], // Email
+      userData[5], // Phone No
+      userData[7], // Hostel
+      userData[6], // Room No
+      "Payment",
+      amount,
+      newTotal,
+      status
+    ]);
+    
+    // Send payment email notification
+    sendPaymentEmail(userData, amount, newTotal, status);
+    
+    return ContentService.createTextOutput(JSON.stringify({
+      "success": true,
+      "newBalance": newTotal
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+// ====================
+// UPDATED NOTIFICATION FUNCTIONS
+// ====================
+
+function sendRegistrationEmail(userData, hostelName) {
+  try {
+    var recipientEmail = userData.email || "arshsandhuiam@gmail.com";
+    var recipientPhone = userData.phoneNo || ""; // Get phone from userData
+    var adminEmail = "arshsandhuiam@gmail.com";
+    var subject = "New User Registration: " + userData.username;
+    
+    var htmlBody = `
+      <h2>New User Registration</h2>
+      <p>A new user has been registered:</p>
+      <table border="1" cellpadding="5">
+        <tr><th>Field</th><th>Value</th></tr>
+        <tr><td>Fingerprint ID</td><td>${userData.fingerprintID}</td></tr>
+        <tr><td>Name</td><td>${userData.username}</td></tr>
+        <tr><td>Roll No</td><td>${userData.rollNo || "N/A"}</td></tr>
+        <tr><td>Phone No</td><td>${recipientPhone || "N/A"}</td></tr>
+        <tr><td>Hostel</td><td>${hostelName}</td></tr>
+      </table>
+      <p>Time: ${new Date().toLocaleString()}</p>
+    `;
+    
+    var plainBody = `New Registration:\nID: ${userData.fingerprintID}\nName: ${userData.username}\nRoll: ${userData.rollNo}\nHostel: ${hostelName}`;
+
+    // 1. Send email to user (if email exists)
+    if (userData.email) {
+      MailApp.sendEmail({
+        to: recipientEmail,
+        subject: subject,
+        body: plainBody,
+        htmlBody: htmlBody
+      });
+      Logger.log("Registration email sent to user");
+    }
+    
+    // 4. Send email to admin
+    MailApp.sendEmail({
+      to: adminEmail,
+      subject: "[Admin] " + subject,
+      body: plainBody,
+      htmlBody: htmlBody
+    });
+    Logger.log("Admin notifications sent");
+    
+  } catch (error) {
+    Logger.log("Notification error: " + error.toString());
+  }
+}
+
+function sendPaymentEmail(userData, amount, newTotal, status) {
+  try {
+    var recipientEmail = userData[4] || ""; // Email column
+    var recipientPhone = userData[5] || ""; // Phone column (index 5)
+    var adminEmail = "arshsandhuiam@gmail.com";
+    var userName = userData[3];
+    
+    // Email content
+    var subject = "Payment Receipt: " + userName;
+    var htmlBody = `
+      <h2>Payment Receipt</h2>
+      <p>Payment details:</p>
+      <table border="1" cellpadding="5">
+        <tr><th>Field</th><th>Value</th></tr>
+        <tr><td>Name</td><td>${userName}</td></tr>
+        <tr><td>Roll No</td><td>${userData[2] || "N/A"}</td></tr>
+        <tr><td>Amount Paid</td><td>Rs. ${amount.toFixed(2)}</td></tr>
+        <tr><td>New Balance</td><td>Rs. ${newTotal.toFixed(2)}</td></tr>
+      </table>
+      <p>Time: ${new Date().toLocaleString()}</p>
+    `;
+    
+    var plainBody = `Payment Receipt:\nName: ${userName}\nAmount: Rs.${amount}\nNew Balance: Rs.${newTotal}`;
+
+    // 1. Send email to user (if email exists)
+    if (recipientEmail) {
+      MailApp.sendEmail({
+        to: recipientEmail,
+        subject: subject,
+        body: plainBody,
+        htmlBody: htmlBody
+      });
+      Logger.log("Payment email sent to user");
+    }
+    
+    
+    // 4. Send email to admin
+    MailApp.sendEmail({
+      to: adminEmail,
+      subject: "[Admin] " + subject,
+      body: plainBody,
+      htmlBody: htmlBody
+    });
+    Logger.log("Admin payment notifications sent");
+    
+  } catch (error) {
+    Logger.log("Payment notification error: " + error.toString());
+  }
+}
+
+
+function handleOTPRequest(data, otpSheet) {
+  var email = data.email;
+  var fingerprintID = data.fingerprintID;
+  
+  // Generate random 6-digit OTP
+  var otp = Math.floor(100000 + Math.random() * 900000).toString();
+  
+  // Store OTP with timestamp (valid for 5 minutes)
+  otpSheet.appendRow([
+    new Date(),
+    email,
+    otp,
+    "FALSE",
+    fingerprintID
+  ]);
+  
+  try {
+    // Send OTP email
+    var subject = "Your OTP for Registration";
+    var body = `Your OTP for fingerprint registration is: ${otp}\n\nThis OTP is valid for 5 minutes.`;
+    
+    MailApp.sendEmail({
+      to: email,
+      subject: subject,
+      body: body
+    });
+    
+    // Return success response
+    return ContentService.createTextOutput(JSON.stringify({
+      "success": true,
+      "message": "OTP sent to email",
+      "status": "SENT"
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch (e) {
+    // Return error response
+    return ContentService.createTextOutput(JSON.stringify({
+      "success": false,
+      "message": "Error sending OTP: " + e.toString(),
+      "status": "ERROR"
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleOTPVerification(data, otpSheet) {
+  var email = data.email;
+  var otpAttempt = data.otp;
+  var fingerprintID = data.fingerprintID;
+  
+  var sheetData = otpSheet.getDataRange().getValues();
+  var now = new Date();
+  
+  for (var i = 1; i < sheetData.length; i++) {
+    var row = sheetData[i];
+    var timestamp = new Date(row[0]);
+    var rowEmail = row[1];
+    var rowOTP = row[2];
+    var rowVerified = row[3];
+    var rowFingerprintID = row[4];
+    
+    // Check if OTP matches and is not expired (5 minutes)
+    if (rowEmail === email && 
+        rowOTP === otpAttempt && 
+        rowFingerprintID == fingerprintID &&
+        rowVerified === "FALSE" &&
+        (now - timestamp) < 5 * 60 * 1000) {
+      
+      // Mark OTP as verified
+      otpSheet.getRange(i + 1, 4).setValue("TRUE");
+      
+      return ContentService.createTextOutput(JSON.stringify({
+        "success": true,
+        "verified": true,
+        "message": "OTP verified successfully"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+  
+  return ContentService.createTextOutput(JSON.stringify({
+    "success": false,
+    "verified": false,
+    "message": "Invalid OTP or expired"
+  })).setMimeType(ContentService.MimeType.JSON);
+}
