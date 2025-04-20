@@ -6,6 +6,7 @@
 #include <Adafruit_Fingerprint.h>
 #include <HardwareSerial.h>
 #include <ArduinoJson.h>
+#include <WiFiServer.h>
 
 
 #define SCREEN_WIDTH 128
@@ -18,6 +19,13 @@
 const char* ssid = "wifi";
 const char* password = "pass12345";
 const char* serverName = "https://script.google.com/macros/s/AKfycbyHvPDI6xpPmoQ9zVZH3jX2xiLxXHyGit3ZNeJZbxAWvzXSvKztAeKUDdRCzj04cEn3SQ/exec";
+
+
+WiFiServer server(23);
+WiFiClient client;
+bool clientConnected = false;
+unsigned long previousMillis = 0;
+const long heartbeatInterval = 3000; // Send heartbeat every 3 seconds when idle
 
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -50,10 +58,30 @@ uint8_t id;
 
 #define BUZZER_PIN 12
 
+// Helper function to send all serial output to TCP client
+void sendToClient(String message) {
+  Serial.print(message);
+  if (clientConnected && client.connected()) {
+    client.print(message);
+  }
+}
+
+void sendToClientln(String message) {
+  Serial.println(message);
+  if (clientConnected && client.connected()) {
+    client.println(message);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(2000);
+  sendToClientln("");
+  sendToClient("Connecting to ");
+  sendToClientln(ssid);
+  
   WiFi.begin(ssid, password);
+
   mySerial.begin(57600, SERIAL_8N1, 16, 17);
   finger.begin(57600);
   delay(2000);
@@ -62,13 +90,17 @@ void setup() {
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
+    sendToClient(".");
   }
-  Serial.println("\nConnected to WiFi");
-
+  sendToClientln("\nConnected to WiFi");
+  sendToClient("IP Address: ");
+  sendToClientln(WiFi.localIP().toString());
+  
+  server.begin();
+  sendToClientln("TCP server started on port 23");
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    Serial.println(F("SSD1306 allocation failed"));
+    sendToClientln("SSD1306 allocation failed");
     for (;;);
   }
 
@@ -80,13 +112,10 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(10, 10);
-  display.println("Mess Management System");
+  display.println("Mess \nManagement \nSystem");
   display.display();
   delay(2000);
   display.clearDisplay();
-
-  // pinMode(BUTTON_LED, OUTPUT);
-  // digitalWrite(BUTTON_LED, LOW); 
 
   pinMode(BUTTON_AMOUNT_10, INPUT_PULLUP);
   pinMode(BUTTON_AMOUNT_20, INPUT_PULLUP);
@@ -102,71 +131,32 @@ void setup() {
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);  
-
-  while(true) {  // Infinite loop instead of ESP.restart()
-    updateDisplay("Press D19 to Register");
-    Serial.println("Press D19 within 5 sec to Register...");
-
-    unsigned long startTime = millis();
-    bool registerSelected = false;
-    
-    while (millis() - startTime < 5000) {
-      if (digitalRead(BUTTON_REGISTER) == LOW) {
-        registerSelected = true;
-
-        digitalWrite(LED_REGISTER, HIGH);  // Turn on register LED
-      Serial.println("Register button pressed - switching to registration mode");
-      updateDisplay("Switching to register...");
-      delay(1000);
-      digitalWrite(LED_REGISTER, LOW);
-      
-        break;
-      }
-    }
-
-
-    if (registerSelected) {
-      Serial.println("Register Mode Selected!");
-      updateDisplay("Register Mode...");
-      delay(1000);
-      registerFingerprint();
-      // After registration completes, it will loop back here
-    } else {
-      Serial.println("Payment Mode Selected!");
-      updateDisplay("Payment Mode...");
-      delay(1000);
-      paymentMode();  // We'll add this function
-    }
-  }
 }
 
 
 
 void beep(int duration = 200) {
   digitalWrite(BUZZER_PIN, HIGH);
-  // digitalWrite(BUTTON_LED, HIGH);  // Turn LED ON
   delay(duration);                 // Buzzer duration
   digitalWrite(BUZZER_PIN, LOW);
-  // delay(2000 - duration);          // Keep LED on for 2s total
-  // digitalWrite(BUTTON_LED, LOW);   // Turn LED OFF
 }
 
 void clearFingerprintDatabase() {
-  Serial.println("Clearing all stored fingerprints...");
+  sendToClientln("Clearing all stored fingerprints...");
   updateDisplay("Clearing database...");
   
   for (int i = 0; i <= 250; i++) {
     if (finger.deleteModel(i) == FINGERPRINT_OK) {
-      Serial.print("Deleted ID ");
-      Serial.println(i);
+      sendToClient("Deleted ID ");
+      sendToClientln(String(i));
     } else {
-      Serial.print("Failed to delete ID ");
-      Serial.println(i);
+      sendToClient("Failed to delete ID ");
+      sendToClientln(String(i));
     }
     delay(50);  // Small delay between deletions
   }
   
-  Serial.println("All fingerprints deleted!");
+  sendToClientln("All fingerprints deleted!");
   updateDisplay("Database cleared!");
   delay(2000);
 }
@@ -233,12 +223,16 @@ String getUserName(int id, String &rollNo) {  // Added rollNo as reference param
   display.println(totalFees);
   display.display();
 
-  Serial.print("User: ");
-  Serial.print(userName);
-  Serial.print(" | Roll No: ");
-  Serial.print(rollNo);
-  Serial.print(" | Total Fees: Rs");
-  Serial.println(totalFees);
+  sendToClient("User      : ");
+  sendToClientln(userName);
+
+  sendToClient("Roll No   : ");
+  sendToClientln(rollNo);
+
+  sendToClient("Total Fees: Rs");
+  sendToClientln(String(totalFees));
+
+
   
   return userName;
 }
@@ -251,31 +245,21 @@ void sendToGoogleSheets(String jsonData) {
     http.addHeader("Content-Type", "application/json; charset=UTF-8");
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    Serial.print("Sending JSON: ");  
-    Serial.println(jsonData);
+    sendToClient("Sending JSON: ");  
+    sendToClientln(jsonData);
 
     int httpResponseCode = http.POST(jsonData);
   
-    Serial.print("HTTP Response code: ");
-    Serial.println(httpResponseCode);
+    sendToClient("HTTP Response code: ");
+    sendToClientln(String(httpResponseCode));
 
     http.end();
   } else {
-    Serial.println("WiFi Disconnected");
+    sendToClientln("WiFi Disconnected");
   }
 }
 
 
-
-uint8_t readnumber(void) {
-  uint8_t num = 0;
-
-  while (num == 0) {
-    while (! Serial.available());
-    num = Serial.parseInt();
-  }
-  return num;
-}
 
 void updateDisplay(String message) {
   display.clearDisplay();
@@ -288,11 +272,11 @@ void updateDisplay(String message) {
 
 String readName() {
   String name = "";
-  Serial.println("Enter the name for this fingerprint:");
+  sendToClientln("Enter the name for this fingerprint:");
   while (name.length() == 0) {
-    while (Serial.available() == 0);
-    name = Serial.readStringUntil('\n');  
-    name.trim(); 
+    name = readInputFromAllSources();
+    name.trim();
+    delay(100);
   }
   return name;
 }
@@ -308,7 +292,7 @@ bool isFingerprintDuplicate() {
   p = finger.fingerFastSearch();
   
   if (p == FINGERPRINT_OK) {
-    Serial.println("Found matching fingerprint with ID #" + String(finger.fingerID));
+    sendToClientln("Found matching fingerprint with ID #" + String(finger.fingerID));
     return true;
   }
   return false;
@@ -317,7 +301,7 @@ bool isFingerprintDuplicate() {
 
 bool isIdAvailableInSheets(uint8_t id) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected - cannot check ID availability");
+    sendToClientln("WiFi not connected - cannot check ID availability");
     return false;
   }
 
@@ -341,19 +325,98 @@ bool isIdAvailableInSheets(uint8_t id) {
   return false; // Assume ID is not available if there's any error
 }
 
+String readInputFromAllSources() {
+  String input = "";
+  unsigned long startTime = millis();
+  const unsigned long timeout = 30000; // 30-second timeout
+  
+  while (millis() - startTime < timeout) {
+    // Check Serial (for debugging)
+    while (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n') {
+        input.trim();
+        if (input.length() > 0) {
+          sendToClientln("From Serial: " + input);
+          return input;
+        }
+        input = "";
+      } else {
+        input += c;
+      }
+    }
+    
+    // Check TCP Client (from app)
+    if (clientConnected && client.available()) {
+      while (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          input.trim();
+          if (input.length() > 0) {
+            sendToClientln("From Client: " + input);
+            return input;
+          }
+          input = "";
+        } else {
+          input += c;
+        }
+      }
+    }
+    
+    // Small delay to prevent busy waiting
+    delay(50);
+    
+    // Check for registration cancellation
+    if (digitalRead(BUTTON_REGISTER) == LOW) {
+      sendToClientln("Registration cancelled by button press");
+      return ""; // Return empty string to indicate cancellation
+    }
+  }
+  
+  sendToClientln("Input timeout reached");
+  return ""; // Return empty string on timeout
+}
+
+
 void registerFingerprint() {
   // clearFingerprintDatabase();
-  Serial.println("Ready to enroll a fingerprint!");
+  sendToClientln("Ready to enroll a fingerprint!");
   updateDisplay("Ready to begin .....");
+
+  // TEST: Add a confirmation prompt
+  sendToClientln("TEST: Please enter '1' to confirm you can see this message");
+  uint8_t confirm = 0;
+  while (confirm != 1) {
+    confirm = readnumber();
+    if (confirm != 1) {
+      sendToClientln("Please enter exactly '1' to confirm");
+    }
+  }
+  sendToClientln("NEUMERIC TEST SUCCESS: Input received correctly!");
+  beep(200);
+  delay(1000);
+
+  // TEST: String input confirmation
+  sendToClientln("TEST: Please enter 'hello' to confirm string input works");
+  String testString = "";
+  while (testString != "hello") {
+    testString = readInputFromAllSources();
+    if (testString != "hello") {
+      sendToClientln("Please enter exactly 'hello' to confirm");
+    }
+  }
+  sendToClientln("STRING TEST SUCCESS: Input received correctly!");
+  beep(200);
+  delay(1000);
   
   while (true) {
-    Serial.println("Please type in the ID # (from 1 to 250) you want to save this finger as...");
+    sendToClientln("Please type in the ID # (from 1 to 250) you want to save this finger as...");
     id = readnumber();
     if (id == 0) return;
 
     // Check if ID exists in Google Sheets
     if (!isIdAvailableInSheets(id)) {
-      Serial.println("ID " + String(id) + " is already registered in the system. Please choose a different ID.");
+      sendToClientln("ID " + String(id) + " is already registered in the system. Please choose a different ID.");
       updateDisplay("ID " + String(id) + " taken!");
       delay(2000);
       continue;
@@ -361,7 +424,7 @@ void registerFingerprint() {
     break;
   }
 
-  Serial.println("Place finger to check for duplicates...");
+  sendToClientln("Place finger to check for duplicates...");
   updateDisplay("Checking for duplicates...");
   
   unsigned long startTime = millis();
@@ -378,7 +441,7 @@ void registerFingerprint() {
   }
 
   if (duplicateFound) {
-    Serial.println("ERROR: This fingerprint is already registered under ID #" + String(finger.fingerID));
+    sendToClientln("ERROR: This fingerprint is already registered under ID #" + String(finger.fingerID));
     beep(1000);
     updateDisplay("Fingerprint exists!\nID: " + String(finger.fingerID));
     
@@ -386,7 +449,7 @@ void registerFingerprint() {
     while(finger.getImage() != FINGERPRINT_NOFINGER);
     
     // Wait for user to remove finger and confirm
-    Serial.println("Press D27 ( CONFIRM BUTTON ) to continue...");
+    sendToClientln("Press D27 ( CONFIRM BUTTON ) to continue...");
     while(digitalRead(BUTTON_CONFIRM) == HIGH) {
       delay(100);
     }
@@ -401,7 +464,16 @@ void registerFingerprint() {
   beep();
 
   String name = readName();
+  if (name.length() == 0) {
+    sendToClientln("Registration cancelled");
+    return;
+  }
+
   String rollNo = readField("Enter Roll Number: ");
+  if (rollNo.length() == 0) {
+    sendToClientln("Registration cancelled");
+    return;
+  }
   
   String email = readField("Enter Email: ");
 
@@ -416,7 +488,7 @@ void registerFingerprint() {
   http.POST(otpRequest); // Fire and forget
   http.end();
 
-  Serial.println("OTP has been sent to your email");
+  sendToClientln("OTP has been sent to your email");
   updateDisplay("Check email for OTP");
 
   // Get OTP from user
@@ -424,7 +496,7 @@ void registerFingerprint() {
 
   // Simple client-side verification
   if (userOTP != otp) {
-    Serial.println("OTP verification failed");
+    sendToClientln("OTP verification failed");
     updateDisplay("Invalid OTP!");
     delay(2000);
     return;
@@ -435,16 +507,16 @@ void registerFingerprint() {
 
   int hostel = 0;
   while (hostel < 1 || hostel > 5) {
-    Serial.println("Select Hostel:");
-    Serial.println("1: Arch A");
-    Serial.println("2: Arch B");
-    Serial.println("3: Arch C");
-    Serial.println("4: Arch D");
-    Serial.println("5: Other");
+    sendToClientln("Select Hostel:");
+    sendToClientln("1: Arch A");
+    sendToClientln("2: Arch B");
+    sendToClientln("3: Arch C");
+    sendToClientln("4: Arch D");
+    sendToClientln("5: Other");
     hostel = readnumber();
     
     if (hostel < 1 || hostel > 5) {
-      Serial.println("Invalid selection! Please choose 1-5");
+      sendToClientln("Invalid selection! Please choose 1-5");
     }
   }
 
@@ -452,46 +524,61 @@ void registerFingerprint() {
 
 
 
-  Serial.print("Enrolling ID #");
-  Serial.println(id);
+  sendToClient("Enrolling ID #");
+  sendToClientln(String(id));
   updateDisplay("Enrolling...");
 
   // Check for duplicate fingerprint before enrolling
   if (!getFingerprintEnroll(name, rollNo, phoneNo, hostel, email, roomNo)) {
-    Serial.println("Failed to enroll fingerprint");
+    sendToClientln("Failed to enroll fingerprint");
     updateDisplay("Enroll failed!");
     delay(2000);
     return;
   }
 
   beep(1000);
-  Serial.println("Registration Complete !");
+  sendToClientln("Registration Complete !");
   updateDisplay("Registered !");
   delay(2000);
   paymentMode();
 }
 
+uint8_t readnumber(void) {
+  uint8_t num = 0;
+
+  while (num == 0) {
+    String input = readInputFromAllSources();
+    if (input.length() > 0) {
+      num = input.toInt();
+    }
+    delay(100);
+  }
+  return num;
+}
+
 String readField(const char* prompt) {
-  Serial.println(prompt);
+  sendToClientln(prompt);
   String input = "";
   while (input.length() == 0) {
-    while (Serial.available() == 0);
-    input = Serial.readStringUntil('\n');  
+    input = readInputFromAllSources();
     input.trim();
     
     // For OTP field, ensure it's 6 digits
     if (strstr(prompt, "OTP") != NULL && input.length() != 6) {
-      Serial.println("OTP must be 6 digits");
+      if (input.length() > 0) { // Only show message if we got some input
+        sendToClientln("OTP must be 6 digits");
+      }
       input = "";
       continue;
     }
+    delay(100); // Small delay to prevent busy waiting
   }
   return input;
 }
 
 bool sendOTPRequest(String jsonData) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected");
+    sendToClientln("WiFi not connected");
     return false;
   }
 
@@ -499,16 +586,16 @@ bool sendOTPRequest(String jsonData) {
   http.begin(serverName);
   http.addHeader("Content-Type", "application/json");
   
-  Serial.println("Sending OTP request:");
-  Serial.println(jsonData);
+  sendToClientln("Sending OTP request:");
+  sendToClientln(jsonData);
   
   int httpCode = http.POST(jsonData);
   String response = http.getString();
   
-  Serial.print("HTTP Response code: ");
-  Serial.println(httpCode);
-  Serial.print("Response: ");
-  Serial.println(response);
+  sendToClient("HTTP Response code: ");
+  sendToClientln(String(httpCode));
+  sendToClient("Response: ");
+  sendToClientln(response);
   
   bool success = (httpCode == 200);
   
@@ -518,7 +605,7 @@ bool sendOTPRequest(String jsonData) {
 
 bool verifyOTP(String jsonData) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected for OTP verification");
+    sendToClientln("WiFi not connected for OTP verification");
     return false;
   }
 
@@ -526,29 +613,29 @@ bool verifyOTP(String jsonData) {
   http.begin(serverName);
   http.addHeader("Content-Type", "application/json");
   
-  Serial.println("Sending OTP verification:");
-  Serial.println(jsonData);
+  sendToClientln("Sending OTP verification:");
+  sendToClientln(jsonData);
   
   int httpCode = http.POST(jsonData);
   
   if (httpCode == 200) {
     String response = http.getString();
-    Serial.print("OTP verification response: ");
-    Serial.println(response);
+    sendToClient("OTP verification response: ");
+    sendToClientln(response);
     
     StaticJsonDocument<200> doc;
     DeserializationError error = deserializeJson(doc, response);
     
     if (!error && doc["success"] == true && doc["verified"] == true) {
       http.end();
-      Serial.println("OTP verification successful");
+      sendToClientln("OTP verification successful");
       return true;
     } else {
-      Serial.println("OTP verification failed in response parsing");
+      sendToClientln("OTP verification failed in response parsing");
     }
   } else {
-    Serial.print("OTP verification HTTP error: ");
-    Serial.println(httpCode);
+    sendToClient("OTP verification HTTP error: ");
+    sendToClientln(String(httpCode));
   }
   
   http.end();
@@ -556,12 +643,10 @@ bool verifyOTP(String jsonData) {
 }
 
 void paymentMode() {
-
-  // beep(10000);
-  // delay(10000);  
+  sendToClientln("Starting payment mode..."); 
 
   while(true) {
-    Serial.println("Waiting for fingerprint...");
+    sendToClientln("Waiting for fingerprint...");
     updateDisplay("Place Finger...");
 
     unsigned long startTime = millis();
@@ -571,10 +656,28 @@ void paymentMode() {
       // Check for fingerprint
       userID = getFingerprintID();
       
+      // Check for TCP client disconnection
+      if (clientConnected && !client.connected()) {
+        clientConnected = false;
+        sendToClientln("Client disconnected");
+      }
+      
+      // Check for new TCP client connections
+      if (!clientConnected) {
+        WiFiClient newClient = server.available();
+        if (newClient) {
+          client = newClient;
+          clientConnected = true;
+          sendToClientln("New client connected");
+          sendToClientln("ESP32 Mess Management System");
+          sendToClientln("Current mode: Payment Mode");
+          sendToClientln("Waiting for fingerprint...");
+        }
+      }
       
       if (digitalRead(BUTTON_REGISTER) == LOW) {
         digitalWrite(LED_REGISTER, HIGH);
-        Serial.println("Register button pressed - switching to registration mode");
+        sendToClientln("Register button pressed - switching to registration mode");
         updateDisplay("Switching to register...");
         delay(1000);
         digitalWrite(LED_REGISTER, LOW);
@@ -585,9 +688,9 @@ void paymentMode() {
       // Small delay to prevent busy-waiting
       delay(100);
       
-      // Optional timeout (e.g., 30 seconds)
+      // Optional timeout (e.g., 5 seconds)
       if (millis() - startTime > 5000) {
-        Serial.println("Timeout waiting for fingerprint");
+        sendToClientln("Timeout waiting for fingerprint");
         updateDisplay("Timeout - Retrying...");
         delay(1000);
         break;  // Break out of the inner while loop
@@ -596,7 +699,7 @@ void paymentMode() {
 
     if (userID == -1) {
       // Fingerprint not recognized or timeout
-      Serial.println("Fingerprint not recognized!");
+      sendToClientln("Fingerprint not recognized!");
       updateDisplay("Not recognized!");
       delay(2000);
       continue;
@@ -605,7 +708,8 @@ void paymentMode() {
     // Found user, get name
     String rollNo;
     String userName = getUserName(userID, rollNo);
-    // updateDisplay("User: " + userName);
+    
+    sendToClientln("Fingerprint detected, ID: " + String(userID));
     delay(3000);
 
     // Select amount using buttons
@@ -618,44 +722,61 @@ void paymentMode() {
       if (digitalRead(BUTTON_AMOUNT_10) == LOW) {
         selectedAmount += 10;
         updateDisplay("Added 10...");
-        Serial.println("Added 10...");
+        sendToClientln("Added 10...");
         delay(300);
       } 
       else if (digitalRead(BUTTON_AMOUNT_20) == LOW) {
         selectedAmount += 20;
         updateDisplay("Added 20...");
-        Serial.println("Added 20...");
+        sendToClientln("Added 20...");
         delay(300);
       } 
       else if (digitalRead(BUTTON_AMOUNT_50) == LOW) {
         selectedAmount += 50;
         updateDisplay("Added 50...");
-        Serial.println("Added 50...");
+        sendToClientln("Added 50...");
         delay(300);
       }
       else if(digitalRead(BUTTON_AMOUNT_100) == LOW) {
         selectedAmount += 100;
         updateDisplay("Added 100...");
-        Serial.println("Added 100...");
+        sendToClientln("Added 100...");
         delay(300);
       }
       else if (digitalRead(BUTTON_CONFIRM) == LOW) {
         digitalWrite(LED_CONFIRM, HIGH);
         if (selectedAmount > 0) {
           updateDisplay("Processing...");
-          Serial.println("Processing...");
+          sendToClientln("Processing...");
           String paymentData = "{\"fingerprintID\":\"" + String(userID) + 
                    "\",\"username\":\"" + userName + 
-                   "\",\"status\":\"Paid " + String(selectedAmount, DEC) + "\"}";
+                   "\",\"status\":\"Paid " + String(selectedAmount) + "\"}";
           sendToGoogleSheets(paymentData);
           beep(300);
           updateDisplay("Paid: Rs : " + String(selectedAmount));
-          Serial.println("Paid: Rs : " + String(selectedAmount));
+          sendToClientln("Paid: Rs : " + String(selectedAmount));
           delay(2000);
         }
         digitalWrite(LED_CONFIRM, LOW);
         paymentDone = true; // Mark payment as complete
       }
+      
+      // Check for TCP client disconnection/reconnection
+      if (clientConnected && !client.connected()) {
+        clientConnected = false;
+        sendToClientln("Client disconnected during payment");
+      }
+      
+      if (!clientConnected) {
+        WiFiClient newClient = server.available();
+        if (newClient) {
+          client = newClient;
+          clientConnected = true;
+          sendToClientln("New client connected during payment");
+          sendToClientln("Current amount: Rs " + String(selectedAmount));
+        }
+      }
+      
       delay(50);
     }
     
@@ -665,168 +786,291 @@ void paymentMode() {
   }
 }
 
-
 void loop() {
+  // Check for TCP client disconnection
+  if (clientConnected && !client.connected()) {
+    clientConnected = false;
+    sendToClientln("Client disconnected");
+  }
   
+  // Check for new TCP client connections
+  if (!clientConnected) {
+    WiFiClient newClient = server.available();
+    if (newClient) {
+      client = newClient;
+      clientConnected = true;
+      sendToClientln("New client connected");
+      sendToClientln("ESP32 Mess Management System");
+      sendToClientln("System ready");
+    }
+  }
+  
+  // Check for incoming data from client
+  if (clientConnected && client.available()) {
+    String receivedData = client.readStringUntil('\n');
+    receivedData.trim();
     
+    if (receivedData.length() > 0) {
+      sendToClient("Received command: ");
+      sendToClientln(receivedData);
+      
+      // Process commands here if needed
+      client.println("Command acknowledged: " + receivedData);
+    }
+  }
+  
+  // Send heartbeat if it's time and we have a client
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= heartbeatInterval) {
+    previousMillis = currentMillis;
+    if (clientConnected) {
+      client.println("System running... Press the Register button to enter registration mode");
+    }
+  }
+  
+  // Main program flow
+  updateDisplay("Press \nRegister Button \nto Register");
+  sendToClientln("Press \nRegister Button \nwithin 5 sec to Register...");
+
+  unsigned long startTime = millis();
+  bool registerSelected = false;
+  
+  while (millis() - startTime < 5000) {
+    // Handle client connections while waiting
+    if (clientConnected && !client.connected()) {
+      clientConnected = false;
+      sendToClientln("Client disconnected during button wait");
+    }
+    
+    if (!clientConnected) {
+      WiFiClient newClient = server.available();
+      if (newClient) {
+        client = newClient;
+        clientConnected = true;
+        sendToClientln("New client connected");
+        sendToClientln("ESP32 Mess Management System");
+        sendToClientln("Press D19 button to enter registration mode");
+      }
+    }
+    
+    if (digitalRead(BUTTON_REGISTER) == LOW) {
+      registerSelected = true;
+      digitalWrite(LED_REGISTER, HIGH);
+      sendToClientln("Register button pressed - switching to registration mode");
+      updateDisplay("Switching to register...");
+      delay(1000);
+      digitalWrite(LED_REGISTER, LOW);
+      break;
+    }
+    
+    delay(100); // Small delay to prevent busy waiting
+  }
+
+  if (registerSelected) {
+    sendToClientln("Register Mode Selected!");
+    updateDisplay("Register Mode...");
+    delay(1000);
+    registerFingerprint();
+  } else {
+    sendToClientln("Payment Mode Selected!");
+    updateDisplay("Payment Mode...");
+    delay(1000);
+    paymentMode();
+  }
 }
 
-
 uint8_t getFingerprintEnroll(String name, String rollNo, String phoneNo, int hostel, String email, String roomNo) {
-
   int p = -1;
-  Serial.print("Waiting for valid finger to enroll as #"); Serial.println(id);
+  sendToClient("Waiting for valid finger to enroll as #"); 
+  sendToClientln(String(id));
+  
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
     switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image taken");
-      // beep();
+      sendToClientln("Image taken");
       break;
     case FINGERPRINT_NOFINGER:
-      Serial.print(".");
+      sendToClient(".");
       break;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      sendToClientln("Communication error");
       break;
     case FINGERPRINT_IMAGEFAIL:
-      Serial.println("Imaging error");
+      sendToClientln("Imaging error");
       break;
     default:
-      Serial.println("Unknown error");
+      sendToClientln("Unknown error");
       break;
     }
+    
+    // Check for client connection/disconnection
+    if (clientConnected && !client.connected()) {
+      clientConnected = false;
+      sendToClientln("Client disconnected during enrollment");
+    }
+    
+    if (!clientConnected) {
+      WiFiClient newClient = server.available();
+      if (newClient) {
+        client = newClient;
+        clientConnected = true;
+        sendToClientln("New client connected during enrollment");
+        sendToClient("Enrolling finger as ID #"); 
+        sendToClientln(String(id));
+      }
+    }
+    
+    delay(100); // Small delay to prevent busy waiting
   }
 
-  // OK success!
-
+  // Rest of the fingerprint enrollment process
   p = finger.image2Tz(1);
   switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image converted");
+      sendToClientln("Image converted");
       beep();
       break;
     case FINGERPRINT_IMAGEMESS:
-      Serial.println("Image too messy");
+      sendToClientln("Image too messy");
       return p;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      sendToClientln("Communication error");
       return p;
     case FINGERPRINT_FEATUREFAIL:
-      Serial.println("Could not find fingerprint features");
+      sendToClientln("Could not find fingerprint features");
       return p;
     case FINGERPRINT_INVALIDIMAGE:
-      Serial.println("Could not find fingerprint features");
+      sendToClientln("Could not find fingerprint features");
       return p;
     default:
-      Serial.println("Unknown error");
+      sendToClientln("Unknown error");
       return p;
   }
 
-  Serial.println("Remove finger");
+  sendToClientln("Remove finger");
   delay(2000);
   p = 0;
   while (p != FINGERPRINT_NOFINGER) {
     p = finger.getImage();
   }
-  Serial.print("ID "); Serial.println(id);
+  
+  sendToClient("ID "); 
+  sendToClientln(String(id));
   p = -1;
-  Serial.println("Place same finger again");
+  sendToClientln("Place same finger again");
+  
   while (p != FINGERPRINT_OK) {
     p = finger.getImage();
     switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image taken");
-      // beep();
+      sendToClientln("Image taken");
       break;
     case FINGERPRINT_NOFINGER:
-      Serial.print(".");
+      sendToClient(".");
       break;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      sendToClientln("Communication error");
       break;
     case FINGERPRINT_IMAGEFAIL:
-      Serial.println("Imaging error");
+      sendToClientln("Imaging error");
       break;
     default:
-      Serial.println("Unknown error");
+      sendToClientln("Unknown error");
       break;
     }
+    
+    // Check for client connection/disconnection
+    if (clientConnected && !client.connected()) {
+      clientConnected = false;
+      sendToClientln("Client disconnected during second finger scan");
+    }
+    
+    if (!clientConnected) {
+      WiFiClient newClient = server.available();
+      if (newClient) {
+        client = newClient;
+        clientConnected = true;
+        sendToClientln("New client connected during enrollment");
+        sendToClientln("Place same finger again");
+      }
+    }
+    
+    delay(100); // Small delay to prevent busy waiting
   }
-
-  // OK success!
 
   p = finger.image2Tz(2);
   switch (p) {
     case FINGERPRINT_OK:
-      Serial.println("Image converted");
+      sendToClientln("Image converted");
       beep();
       break;
     case FINGERPRINT_IMAGEMESS:
-      Serial.println("Image too messy");
+      sendToClientln("Image too messy");
       return p;
     case FINGERPRINT_PACKETRECIEVEERR:
-      Serial.println("Communication error");
+      sendToClientln("Communication error");
       return p;
     case FINGERPRINT_FEATUREFAIL:
-      Serial.println("Could not find fingerprint features");
+      sendToClientln("Could not find fingerprint features");
       return p;
     case FINGERPRINT_INVALIDIMAGE:
-      Serial.println("Could not find fingerprint features");
+      sendToClientln("Could not find fingerprint features");
       return p;
     default:
-      Serial.println("Unknown error");
+      sendToClientln("Unknown error");
       return p;
   }
 
-  // OK converted!
-  Serial.print("Creating model for #");  Serial.println(id);
+  sendToClient("Creating model for #");  
+  sendToClientln(String(id));
 
   p = finger.createModel();
   if (p == FINGERPRINT_OK) {
-    Serial.println("Prints matched!");
+    sendToClientln("Prints matched!");
     beep(1000);
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Communication error");
+    sendToClientln("Communication error");
     return p;
   } else if (p == FINGERPRINT_ENROLLMISMATCH) {
-    Serial.println("Fingerprints did not match");
+    sendToClientln("Fingerprints did not match");
     return p;
   } else {
-    Serial.println("Unknown error");
+    sendToClientln("Unknown error");
     return p;
   }
 
   p = finger.fingerFastSearch();
   if (p == FINGERPRINT_OK) {
-    Serial.println("ERROR: Fingerprint matched existing template during enrollment!");
+    sendToClientln("ERROR: Fingerprint matched existing template during enrollment!");
     return FINGERPRINT_DUPLICATE;
   }
 
-  Serial.print("ID "); Serial.println(id);
+  sendToClient("ID "); 
+  sendToClientln(String(id));
   p = finger.storeModel(id);
   if (p == FINGERPRINT_OK) {
-    Serial.println("Stored!");
+    sendToClientln("Stored!");
   } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
-    Serial.println("Communication error");
+    sendToClientln("Communication error");
     return p;
   } else if (p == FINGERPRINT_BADLOCATION) {
-    Serial.println("Could not store in that location");
+    sendToClientln("Could not store in that location");
     return p;
   } else if (p == FINGERPRINT_FLASHERR) {
-    Serial.println("Error writing to flash");
+    sendToClientln("Error writing to flash");
     return p;
   } else {
-    Serial.println("Unknown error");
+    sendToClientln("Unknown error");
     return p;
   }
 
 
   if (p == FINGERPRINT_OK) {
-  Serial.println("Stored!");
-  beep(200);
+    sendToClientln("Stored!");
+    beep(200);
 
-  String hostelName;
+    String hostelName;
     if (hostel == 1) {
       hostelName = "Arch A";
     } else if (hostel == 2) {
@@ -839,25 +1083,24 @@ uint8_t getFingerprintEnroll(String name, String rollNo, String phoneNo, int hos
       hostelName = "Other";
     }
 
-  String jsonData = "{\"fingerprintID\":\"" + String(id) + 
-                     "\",\"username\":\"" + name + 
-                     "\",\"rollNo\":\"" + rollNo + 
-                     "\",\"phoneNo\":\"" + phoneNo + 
-                     "\",\"hostel\":\"" + String(hostel) + 
-                     "\",\"hostelName\":\"" + hostelName + 
-                     "\",\"email\":\"" + email + 
-                     "\",\"roomNo\":\"" + roomNo + 
-                     "\",\"status\":\"Stored Successfully\"}";
+    String jsonData = "{\"fingerprintID\":\"" + String(id) + 
+                      "\",\"username\":\"" + name + 
+                      "\",\"rollNo\":\"" + rollNo + 
+                      "\",\"phoneNo\":\"" + phoneNo + 
+                      "\",\"hostel\":\"" + String(hostel) + 
+                      "\",\"hostelName\":\"" + hostelName + 
+                      "\",\"email\":\"" + email + 
+                      "\",\"roomNo\":\"" + roomNo + 
+                      "\",\"status\":\"Stored Successfully\"}";
     
     sendToGoogleSheets(jsonData);
   } else {
-    Serial.println("Error storing fingerprint");
+    sendToClientln("Error storing fingerprint");
     String jsonData = "{\"fingerprintID\":\"" + String(id) + 
-                     "\",\"username\":\"" + name + 
-                     "\",\"status\":\"Error\"}";
+                      "\",\"username\":\"" + name + 
+                      "\",\"status\":\"Error\"}";
     sendToGoogleSheets(jsonData);
   }
-
 
   return true;
 }
