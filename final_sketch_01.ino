@@ -18,7 +18,7 @@
 
 const char* ssid = "wifi";
 const char* password = "pass12345";
-const char* serverName = "https://script.google.com/macros/s/AKfycbyHvPDI6xpPmoQ9zVZH3jX2xiLxXHyGit3ZNeJZbxAWvzXSvKztAeKUDdRCzj04cEn3SQ/exec";
+const char* serverName = ""; // get from google excel app script deployment
 
 
 WiFiServer server(23);
